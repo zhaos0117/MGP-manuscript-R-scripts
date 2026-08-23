@@ -20,13 +20,13 @@ Human snRNA-seq samples
 
 Five samples from the public human atrial snRNA-seq dataset were used for the analysis:
 
-Analysis label   Group
-
-ctrl_10        Control
-ctrl_11        Control
-ctrl_12        Control
-AF_13          Atrial fibrillation
-AF_14          Atrial fibrillation
+| Analysis label | Group |
+| --- | --- |
+| `ctrl_10` | Control |
+| `ctrl_11` | Control |
+| `ctrl_12` | Control |
+| `AF_13` | Atrial fibrillation |
+| `AF_14` | Atrial fibrillation |
 
 The raw public snRNA-seq data are not included in this repository. Users should obtain the data from the original public data source (GSE224959).
 

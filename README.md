@@ -38,9 +38,9 @@ DESeq2 and clusterProfiler analysis of bulk RNA-seq data from primary mouse ACFs
 Experimental groups: 
 
 - Vehicle (`Veh`)
-- TGF-β (`TGFb`)
+- TGFβ (`TGFb`)
 - Recombinant MGP (`rMGP`)
-- Recombinant MGP + TGF-β (`rMGPTGFb`)
+- Recombinant MGP + TGFβ (`rMGPTGFb`)
 
 The script includes: DESeq2 dataset construction and gene filtering; PCA and Differential gene expression analysis; Fibrosis-associated gene heatmap; DEG Volcano plots; Gene Ontology enrichment analysis
 

@@ -1,0 +1,511 @@
+---
+title: "Recombinant MGP bulk RNA-seq analysis"
+author: "SZ"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Required packages
+```{r}
+suppressPackageStartupMessages(library(DESeq2))
+suppressPackageStartupMessages(library(org.Mm.eg.db))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(ggrepel))
+suppressPackageStartupMessages(library(matrixStats))
+suppressPackageStartupMessages(library(ggforce))
+suppressPackageStartupMessages(library(clusterProfiler))
+suppressPackageStartupMessages(library(enrichplot))
+suppressPackageStartupMessages(library(viridis))
+
+set.seed(123)
+```
+
+## Load count matrix and sample information
+```{r}
+cts <- read.table("featurecounts.rMGP.final.txt",
+                  header = TRUE, row.names = 1)
+
+colData <- read.table("design.rMGP.txt",
+                      header = TRUE, stringsAsFactors = TRUE)
+
+colData$condition <- factor(
+  colData$condition,
+  levels = c("Veh", "TGFb", "rMGP", "rMGPTGFb")
+)
+```
+
+## DESeq2 dataset and filtering
+```{r}
+dds <- DESeqDataSetFromMatrix(
+  countData = cts,
+  colData = colData,
+  design = ~ condition
+)
+
+# Keep genes with at least 10 reads in at least 4 samples
+keep <- rowSums(counts(dds) >= 10) >= 4
+dds <- dds[keep, ]
+
+dds <- DESeq(dds)
+```
+
+## Figure 8A: PCA
+```{r, fig.width=10, fig.height=8}
+vsd <- vst(dds, blind = FALSE)
+mat <- assay(vsd)
+
+pcaData <- plotPCA(vsd, intgroup = "condition", returnData = TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+p.pca <- ggplot(pcaData, aes(PC1, PC2, color = condition)) +
+  geom_point(size = 3, shape = 16) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  geom_text_repel(aes(label = name), size = 8, fontface = "bold") +
+  theme_bw() +
+  ggforce::geom_mark_ellipse(
+    aes(color = condition),
+    linetype = "dashed", linewidth = 0.5
+  ) +
+  scale_color_manual(values = c(
+    "Veh" = "#4878CF",
+    "TGFb" = "#D65F5F",
+    "rMGP" = "#6ACC65",
+    "rMGPTGFb" = "#B47CC7"
+  )) +
+  theme(
+    legend.position = "bottom",
+    axis.text = element_text(size = 20, face = "bold", color = "black"),
+    axis.title = element_text(size = 20, face = "bold", color = "black"),
+    legend.text = element_text(size = 20, face = "bold"),
+    legend.title = element_blank(),
+    panel.border = element_rect(linewidth = 1.5, color = "black")
+  ) +
+  xlim(-20, 20) +
+  ylim(-10, 15) +
+  coord_fixed(ratio = 1.5) +
+  guides(color = guide_legend(
+    override.aes = list(linetype = "blank", shape = 16)
+  ))
+```
+
+## Differential expression analysis
+```{r}
+# TGFb vs Veh
+res_T_vs_V <- results(dds, name = "condition_TGFb_vs_Veh")
+res_T_vs_V <- as.data.frame(res_T_vs_V[order(res_T_vs_V$padj), ])
+res_T_vs_V$geneid <- rownames(res_T_vs_V)
+
+# rMGP + TGFb vs TGFb
+res_r_vs_T <- results(
+  dds,
+  contrast = c("condition", "rMGPTGFb", "TGFb")
+)
+res_r_vs_T <- as.data.frame(res_r_vs_T[order(res_r_vs_T$padj), ])
+res_r_vs_T$geneid <- rownames(res_r_vs_T)
+
+# rMGP vs Veh
+res_r_vs_V <- results(
+  dds,
+  contrast = c("condition", "rMGP", "Veh")
+)
+res_r_vs_V <- as.data.frame(res_r_vs_V[order(res_r_vs_V$padj), ])
+res_r_vs_V$geneid <- rownames(res_r_vs_V)
+
+# Add mouse gene symbols
+res_T_vs_V$symbol <- mapIds(
+  org.Mm.eg.db, keys = rownames(res_T_vs_V),
+  column = "SYMBOL", keytype = "ENSEMBL", multiVals = "first"
+)
+
+res_r_vs_T$symbol <- mapIds(
+  org.Mm.eg.db, keys = rownames(res_r_vs_T),
+  column = "SYMBOL", keytype = "ENSEMBL", multiVals = "first"
+)
+
+res_r_vs_V$symbol <- mapIds(
+  org.Mm.eg.db, keys = rownames(res_r_vs_V),
+  column = "SYMBOL", keytype = "ENSEMBL", multiVals = "first"
+)
+
+# Significant DEGs: adjusted p < 0.05 and |log2FC| > 1
+resSig_T_vs_V <- subset(
+  res_T_vs_V,
+  padj < 0.05 & abs(log2FoldChange) > 1
+)
+
+resSig_r_vs_T <- subset(
+  res_r_vs_T,
+  padj < 0.05 & abs(log2FoldChange) > 1
+)
+
+resSig_r_vs_V <- subset(
+  res_r_vs_V,
+  padj < 0.05 & abs(log2FoldChange) > 1
+)
+```
+
+## Figure 8B: fibrosis-associated gene heatmap
+```{r}
+res_T_vs_V_df <- as.data.frame(res_T_vs_V) %>%
+  filter(!is.na(symbol) & !is.na(padj))
+
+res_r_vs_T_df <- as.data.frame(res_r_vs_T) %>%
+  filter(!is.na(symbol) & !is.na(padj))
+
+res_r_vs_V_df <- as.data.frame(res_r_vs_V) %>%
+  filter(!is.na(symbol) & !is.na(padj))
+
+ecm_genes <- c(
+  "Postn", "Acta2", "Ccn2", "Fn1", "Col1a1", "Col1a2",
+  "Ltbp2", "Loxl3", "Col11a1", "Serpine1",
+  "Thbs1", "Tagln", "Eln", "Mmp2", "Timp1"
+)
+
+ecm_ids <- rownames(res_T_vs_V_df)[
+  res_T_vs_V_df$symbol %in% ecm_genes
+]
+
+norm_counts <- counts(dds, normalized = TRUE)
+mat.1_ecm <- norm_counts[ecm_ids, ]
+rownames(mat.1_ecm) <- res_T_vs_V_df$symbol[
+  match(ecm_ids, rownames(res_T_vs_V_df))
+]
+
+ann_col <- data.frame(condition = dds$condition)
+rownames(ann_col) <- colnames(dds)
+
+sig_T_vs_V <- res_T_vs_V_df %>%
+  filter(symbol %in% ecm_genes) %>%
+  mutate(sig_TGFb = ifelse(
+    padj <= 0.05 & abs(log2FoldChange) >= 1, "yes", "no"
+  )) %>%
+  select(symbol, sig_TGFb)
+
+sig_r_vs_T <- res_r_vs_T_df %>%
+  filter(symbol %in% ecm_genes) %>%
+  mutate(sig_rMGP_TGFb = ifelse(
+    padj <= 0.05 & abs(log2FoldChange) >= 1, "yes", "no"
+  )) %>%
+  select(symbol, sig_rMGP_TGFb)
+
+sig_r_vs_V <- res_r_vs_V_df %>%
+  filter(symbol %in% ecm_genes) %>%
+  mutate(sig_rMGP = ifelse(
+    padj <= 0.05 & abs(log2FoldChange) >= 1, "yes", "no"
+  )) %>%
+  select(symbol, sig_rMGP)
+
+ann_row_ecm <- sig_T_vs_V %>%
+  left_join(sig_r_vs_T, by = "symbol") %>%
+  left_join(sig_r_vs_V, by = "symbol")
+
+rownames(ann_row_ecm) <- ann_row_ecm$symbol
+ann_row_ecm <- ann_row_ecm %>% select(-symbol)
+
+ann_colors_ecm <- list(
+  condition = c(
+    "Veh" = "#4878CF",
+    "TGFb" = "#D65F5F",
+    "rMGP" = "#6ACC65",
+    "rMGPTGFb" = "#B47CC7"
+  ),
+  sig_TGFb = c("yes" = "#D65F5F", "no" = "grey90"),
+  sig_rMGP_TGFb = c("yes" = "#B47CC7", "no" = "grey90"),
+  sig_rMGP = c("yes" = "#6ACC65", "no" = "grey90")
+)
+
+v.pheat1 <- pheatmap(
+  mat.1_ecm,
+  scale = "row",
+  annotation_col = ann_col,
+  annotation_row = ann_row_ecm,
+  annotation_colors = ann_colors_ecm,
+  cluster_cols = FALSE,
+  cluster_rows = TRUE,
+  show_colnames = TRUE,
+  show_rownames = TRUE,
+  fontsize_row = 12,
+  fontsize_col = 10,
+  border_color = "black",
+  color = colorRampPalette(c("blue3", "white", "red"))(100)
+)
+```
+
+## Volcano plots: Figure 8C, Figure 8F, and Supplemental Figure 9A
+```{r}
+# Add DEG categories using the same thresholds used above
+res_T_vs_V$color <- ifelse(
+  is.na(res_T_vs_V$padj), "unchange",
+  ifelse(
+    res_T_vs_V$padj <= 0.05 & abs(res_T_vs_V$log2FoldChange) >= 1,
+    ifelse(res_T_vs_V$log2FoldChange > 0, "up", "down"),
+    "unchange"
+  )
+)
+
+res_r_vs_T$color <- ifelse(
+  is.na(res_r_vs_T$padj), "unchange",
+  ifelse(
+    res_r_vs_T$padj <= 0.05 & abs(res_r_vs_T$log2FoldChange) >= 1,
+    ifelse(res_r_vs_T$log2FoldChange > 0, "up", "down"),
+    "unchange"
+  )
+)
+
+res_r_vs_V$color <- ifelse(
+  is.na(res_r_vs_V$padj), "unchange",
+  ifelse(
+    res_r_vs_V$padj <= 0.05 & abs(res_r_vs_V$log2FoldChange) >= 1,
+    ifelse(res_r_vs_V$log2FoldChange > 0, "up", "down"),
+    "unchange"
+  )
+)
+
+color <- c(up = "red", unchange = "gray", down = "blue")
+
+# rMGP + TGFb vs TGFb
+v.r_vs_T <- ggplot(
+  res_r_vs_T,
+  aes(log2FoldChange, -log10(padj), col = color)
+) +
+  geom_point() +
+  theme_bw() +
+  scale_color_manual(values = color) +
+  labs(x = "log2(fold change)", y = "-log10(padj)") +
+  geom_hline(
+    yintercept = -log10(0.05),
+    lty = 4, col = "black", lwd = 1.2
+  ) +
+  geom_vline(
+    xintercept = c(-1, 1),
+    lty = 4, col = "black", lwd = 1.2
+  ) +
+  theme(
+    legend.position = "bottom",
+    panel.grid = element_blank(),
+    axis.title = element_text(size = 37, face = "bold", color = "black"),
+    axis.text = element_text(size = 30, face = "bold", color = "black"),
+    legend.text = element_text(size = 36, face = "bold"),
+    legend.title = element_blank(),
+    panel.border = element_rect(linewidth = 1.5, color = "black")
+  )
+
+# rMGP vs Veh
+v.r_vs_V <- ggplot(
+  res_r_vs_V,
+  aes(log2FoldChange, -log10(padj), col = color)
+) +
+  geom_point() +
+  theme_bw() +
+  scale_color_manual(values = color) +
+  labs(x = "log2(fold change)", y = "-log10(padj)") +
+  geom_hline(
+    yintercept = -log10(0.05),
+    lty = 4, col = "black", lwd = 1.2
+  ) +
+  geom_vline(
+    xintercept = c(-1, 1),
+    lty = 4, col = "black", lwd = 1.2
+  ) +
+  theme(
+    legend.position = "bottom",
+    panel.grid = element_blank(),
+    axis.title = element_text(size = 37, face = "bold", color = "black"),
+    axis.text = element_text(size = 30, face = "bold", color = "black"),
+    legend.text = element_text(size = 36, face = "bold"),
+    legend.title = element_blank(),
+    panel.border = element_rect(linewidth = 1.5, color = "black")
+  )
+
+# TGFb vs Veh
+v.T_vs_V <- ggplot(
+  res_T_vs_V,
+  aes(log2FoldChange, -log10(padj), col = color)
+) +
+  geom_point() +
+  theme_bw() +
+  scale_color_manual(values = color) +
+  labs(x = "log2(fold change)", y = "-log10(padj)") +
+  geom_hline(
+    yintercept = -log10(0.05),
+    lty = 4, col = "black", lwd = 1.2
+  ) +
+  geom_vline(
+    xintercept = c(-1, 1),
+    lty = 4, col = "black", lwd = 1.2
+  ) +
+  theme(
+    legend.position = "bottom",
+    panel.grid = element_blank(),
+    axis.title = element_text(size = 37, face = "bold", color = "black"),
+    axis.text = element_text(size = 30, face = "bold", color = "black"),
+    legend.text = element_text(size = 36, face = "bold"),
+    legend.title = element_blank(),
+    panel.border = element_rect(linewidth = 1.5, color = "black")
+  )
+```
+
+## Gene Ontology enrichment
+```{r}
+database <- org.Mm.eg.db
+
+# Split significant DEGs by direction
+r_vs_T_UP <- subset(resSig_r_vs_T, log2FoldChange >= 1)
+r_vs_T_DOWN <- subset(resSig_r_vs_T, log2FoldChange <= -1)
+
+r_vs_V_UP <- subset(resSig_r_vs_V, log2FoldChange >= 1)
+r_vs_V_DOWN <- subset(resSig_r_vs_V, log2FoldChange <= -1)
+
+T_vs_V_UP <- subset(resSig_T_vs_V, log2FoldChange >= 1)
+
+# Convert Ensembl IDs
+ids_r_vs_T_UP <- bitr(
+  rownames(r_vs_T_UP),
+  fromType = "ENSEMBL",
+  toType = c("ENTREZID", "SYMBOL"),
+  OrgDb = database
+) %>% distinct(SYMBOL, .keep_all = TRUE)
+
+ids_r_vs_T_DOWN <- bitr(
+  rownames(r_vs_T_DOWN),
+  fromType = "ENSEMBL",
+  toType = c("ENTREZID", "SYMBOL"),
+  OrgDb = database
+) %>% distinct(SYMBOL, .keep_all = TRUE)
+
+ids_r_vs_V_UP <- bitr(
+  rownames(r_vs_V_UP),
+  fromType = "ENSEMBL",
+  toType = c("ENTREZID", "SYMBOL"),
+  OrgDb = database
+) %>% distinct(SYMBOL, .keep_all = TRUE)
+
+ids_r_vs_V_DOWN <- bitr(
+  rownames(r_vs_V_DOWN),
+  fromType = "ENSEMBL",
+  toType = c("ENTREZID", "SYMBOL"),
+  OrgDb = database
+) %>% distinct(SYMBOL, .keep_all = TRUE)
+
+ids_T_vs_V_UP <- bitr(
+  rownames(T_vs_V_UP),
+  fromType = "ENSEMBL",
+  toType = c("ENTREZID", "SYMBOL"),
+  OrgDb = database
+) %>% distinct(SYMBOL, .keep_all = TRUE)
+```
+
+```{r}
+# Figure 8D: upregulated DEGs, rMGP + TGFb vs TGFb
+ego_r_vs_T_UP <- enrichGO(
+  gene = ids_r_vs_T_UP[,1],
+  OrgDb = database,
+  ont = "BP",
+  keyType = "ENSEMBL",
+  pAdjustMethod = "BH",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  pool = FALSE,
+  readable = TRUE
+)
+
+# Figure 8E: downregulated DEGs, rMGP + TGFb vs TGFb
+ego_r_vs_T_DOWN <- enrichGO(
+  gene = ids_r_vs_T_DOWN[,1],
+  OrgDb = database,
+  ont = "BP",
+  keyType = "ENSEMBL",
+  pAdjustMethod = "BH",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  pool = FALSE,
+  readable = TRUE
+)
+
+# Figure 8G: upregulated DEGs, rMGP vs Veh
+ego_r_vs_V_UP <- enrichGO(
+  gene = ids_r_vs_V_UP[,1],
+  OrgDb = database,
+  ont = "BP",
+  keyType = "ENSEMBL",
+  pAdjustMethod = "BH",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  pool = FALSE,
+  readable = TRUE
+)
+
+# Preserve the GO-term filtering used in the original clusterProfiler file
+#virus_terms <- c(
+  #"response to virus",
+  #"defense response to virus",
+  #"defense response to symbiont",
+  #"response to lipopolysaccharide"
+#)
+
+#ego_r_vs_V_UP_filtered <- ego_r_vs_V_UP
+#ego_r_vs_V_UP_filtered@result <-
+ #ego_r_vs_V_UP_filtered@result[
+   # !ego_r_vs_V_UP_filtered@result$Description %in% virus_terms,
+  #]
+
+# Figure 8H: downregulated DEGs, rMGP vs Veh
+ego_r_vs_V_DOWN <- enrichGO(
+  gene = ids_r_vs_V_DOWN[,1],
+  OrgDb = database,
+  ont = "BP",
+  keyType = "ENSEMBL",
+  pAdjustMethod = "BH",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  pool = FALSE,
+  readable = TRUE
+)
+
+# Supplemental Figure 9B: upregulated DEGs, TGFb vs Veh
+ego_T_vs_V_UP <- enrichGO(
+  gene = ids_T_vs_V_UP[,1],
+  OrgDb = database,
+  ont = "BP",
+  keyType = "ENSEMBL",
+  pAdjustMethod = "BH",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  pool = FALSE,
+  readable = TRUE
+)
+```
+
+## GO dot plots used in the figures
+```{r}
+p.go.rT.up <- dotplot(ego_r_vs_T_UP, showCategory = 10) +
+  scale_color_viridis()
+
+p.go.rT.down <- dotplot(ego_r_vs_T_DOWN, showCategory = 10) +
+  scale_color_viridis()
+
+p.go.rV.up <- dotplot(ego_r_vs_V_UP_filtered, showCategory = 10) +
+  scale_color_viridis()
+
+p.go.rV.down <- dotplot(ego_r_vs_V_DOWN, showCategory = 10) +
+  scale_color_viridis()
+
+p.go.TV.up <- dotplot(ego_T_vs_V_UP, showCategory = 10) +
+  scale_color_viridis()
+```
+
+## Session information
+```{r}
+sessionInfo()
+```

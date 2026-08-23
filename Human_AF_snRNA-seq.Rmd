@@ -1,0 +1,162 @@
+---
+title: "human_AF"
+author: "SZ"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+suppressPackageStartupMessages(library(Seurat))
+suppressPackageStartupMessages(library(glmGamPoi))
+suppressPackageStartupMessages(library(tidydr))
+suppressPackageStartupMessages(library(ggpubr))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(harmony))
+suppressPackageStartupMessages(library(paletteer))
+```
+
+# Read 10X gene expression matrices and generate a combined matrix
+```{r}
+dir <- c('/home/szhao/AF/ctrl_10/',
+         '/home/szhao/AF/ctrl_11/',
+         '/home/szhao/AF/ctrl_12/',
+         '/home/szhao/AF/AF_13/',
+         '/home/szhao/AF/AF_14/')
+names(dir) <- c("ctrl.10","ctrl.11","ctrl.12","AF.13","AF.14")
+
+#Load all datasets into a list
+counts_list <- lapply(dir, function(d) Read10X(data.dir = d))
+#Find the intersection of genes across all samples
+common_genes <- Reduce(intersect, lapply(counts_list, rownames))
+#Subset each matrix to keep only the common genes
+counts_list_common <- lapply(counts_list, function(mat) mat[common_genes, ])
+#Append unique sample names (S1_ to S12_) to cell barcodes
+counts_list_common <- lapply(seq_along(counts_list_common), function(i) {
+  colnames(counts_list_common[[i]]) <- paste0("S", i, "_", colnames(counts_list_common[[i]]))
+  counts_list_common[[i]]
+})
+#Merge all count matrices into one
+merged_counts <- do.call(cbind, counts_list_common)
+```
+
+# Create the Seurat object
+```{r}
+human.AF<- CreateSeuratObject(counts = merged_counts, min.cells = 3, min.features = 200)
+
+#Define the original sample names
+original_sample_names <- c("ctrl.10", "ctrl.11", "ctrl.12", "AF.13", "AF.14")
+#Get the unique 'orig.ident' labels added by Seurat (S1, S2, etc.)
+unique_labels <- unique(human.AF@active.ident)
+# Update 'active.ident' using factor levels
+human.AF@active.ident <- factor(human.AF@active.ident, levels = unique_labels, labels = original_sample_names)
+#do the same to orig.ident
+unique_labels <- unique(human.AF$orig.ident)
+human.AF$orig.ident<- factor(human.AF$orig.ident, levels = unique_labels, labels = original_sample_names)
+
+#add column information
+human.AF$patient <- human.AF$orig.ident
+human.AF$group <- NA
+human.AF$group[human.AF$patient %in% c("ctrl.10", "ctrl.11","ctrl.12")] <- "ctrl"
+human.AF$group[human.AF$patient %in% c("AF.13", "AF.14")] <- "AF"
+
+human.AF$patient<-factor(human.AF$patient, levels = c("ctrl.10","ctrl.11","ctrl.12","AF.13","AF.14"))
+human.AF$group<-factor(human.AF$group, levels = c("ctrl","AF"))
+```
+
+# Quality control
+```{r}
+#add mt information
+human.AF[["percent.MT"]] <- PercentageFeatureSet(human.AF, pattern = "^MT-")
+#add HB information
+HB.genes <- c("HBA1","HBA2","HBB","HBD","HBE1","HBG1","HBG2","HBM","HBQ1","HBZ")
+HB_m <- match(HB.genes, rownames(human.AF@assays$RNA)) 
+HB.genes <- rownames(human.AF@assays$RNA)[HB_m] 
+HB.genes <- HB.genes[!is.na(HB.genes)] 
+human.AF[["percent.HB"]]<-PercentageFeatureSet(human.AF, features=HB.genes) 
+#filter out cells that have fewer than 200 genes, and the percent of MT larger than 15%, and the percent of HB larger than 1%
+human.AF <- subset(human.AF, subset = nFeature_RNA > 250 & nFeature_RNA < 8000 & percent.MT < 25 & percent.HB < 1) 
+```
+
+# Run SCTransform on each dataset separately
+```{r}
+human.AF.list <- SplitObject(human.AF, split.by="patient")
+human.AF.list <- lapply(X = human.AF.list, 
+                          FUN = SCTransform, 
+                          method = "glmGamPoi", 
+                          vars.to.regress = c("percent.MT", "nCount_RNA"),
+                          return.only.var.genes = FALSE)
+var.features <- SelectIntegrationFeatures(object.list = human.AF.list, nfeatures = 3000)
+```
+
+# PCA and Harmony integration
+```{r}
+human.AF.sct <- merge(x = human.AF.list[[1]], 
+                        y = human.AF.list[2:length(human.AF.list)],
+                        merge.data=TRUE)
+VariableFeatures(human.AF.sct) <- var.features
+human.AF.sct <- RunPCA(human.AF.sct, verbose = FALSE)
+
+human.AF.sct <- RunHarmony(human.AF.sct, 
+                     assay.use="SCT",
+                     group.by.vars = "orig.ident",
+                     plot_convergence = F)
+```
+
+# UMAP and clustering
+```{r}
+human.AF.sct <- RunUMAP(human.AF.sct, dims = 1:25, reduction = "harmony", verbose = F)
+
+human.AF.sct <- human.AF.sct %>% 
+  FindNeighbors(reduction = "harmony", dims = 1:25, verbose = F)
+
+human.AF.sct <- FindClusters(human.AF.sct, resolution = 0.04, verbose = F)
+```
+
+# Cell-type annotation
+```{r}
+new.cluster.ids <- c("0" = "T cells 1",
+                     "1" = "Myeloid cells",
+                     "2" = "Endothelial cells",
+                     "3" = "Fibroblasts",
+                     "4" = "Mural cells",
+                     "5" = "B cells")
+human.AF.sct <- RenameIdents(human.AF.sct, new.cluster.ids)
+human.AF.sct$celltype <- Idents(human.AF.sct)
+```
+
+# UMAP
+```{r, fig.width=6, fig.height=4}
+pal.human <- c(paletteer_d("ggsci::nrc_npg")[c(1,2,3,4,5,6)])
+d1 <- DimPlot(human.AF.sct, cols = pal.human, group.by = "celltype", label = T, repel = T) + NoLegend()+
+  theme_dr()+
+  theme(panel.grid=element_blank())
+```
+
+#Feature plot of MGP expression
+```{r}
+FeaturePlot(human.AF.sct, features = "MGP", order = TRUE) +
+  scale_color_viridis(option = "rocket", direction = -1) +
+  NoAxes()
+```
+
+# MGP expression in fibroblasts
+```{r, fig.width=6, fig.height=4}
+fibro.only <- subset(human.AF.sct, subset = celltype == "Fibroblasts")
+# Set 'group' as the identity for x-axis plotting
+Idents(fibro.only) <- "group"
+# Plot MGP expression across groups in fibroblasts
+VlnPlot(fibro.only,
+        features = "MGP",
+        cols = c("#3B0F70", "#F6D746"),
+        pt.size = 0) +
+  stat_compare_means(method = "wilcox.test", label = "p.signif") +
+  stat_summary(fun = mean, geom = "point", color = "red") +
+  theme(legend.position = "none")
+```
+
+```{r}
+sessionInfo()
+```

@@ -1,2 +1,2 @@
 # MGP-manuscript-R-scripts
-R scripts used to generate omics output in MGP manuscript
+This repository contains the R scripts used for data analysis and figure generation in the manuscript

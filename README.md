@@ -43,8 +43,8 @@ Differentially expressed genes are defined using: adjusted P value < 0.05 and |l
 
 The comparisons used in the manuscript are:
 
-TGFb vs Veh
-rMGPTGFb vs TGFb
-rMGP vs Veh
+- `TGFb vs Veh`
+- `rMGPTGFb vs TGFb`
+- `rMGP vs Veh`
 
 Users can access to raw  processed data from the original public data source (GSE342294).

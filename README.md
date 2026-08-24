@@ -52,4 +52,4 @@ The comparisons used in the manuscript are:
 - `rMGPTGFb vs TGFb`
 - `rMGP vs Veh`
 
-Users can access to raw  processed data from the original public data source (GSE342294).
+Users can access to raw and processed data from the original public data source (GSE342294).
